@@ -178,7 +178,11 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
-    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+    #embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+    
+    feature_dim = 64
+    scale=torch.tensor([[0.3],[0.3],[0.3]])
+    embed_fn, input_ch = TriPlaneEmbedder(feature_dim, 400, scale), feature_dim
 
     input_ch_views = 0
     embeddirs_fn = None
@@ -190,6 +194,7 @@ def create_nerf(args):
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
     grad_vars = list(model.parameters())
+    grad_vars += list(embed_fn.parameters())
 
     model_fine = None
     if args.N_importance > 0:
@@ -432,13 +437,13 @@ def config_parser():
                         help='input data directory')
 
     # training options
-    parser.add_argument("--netdepth", type=int, default=8, 
+    parser.add_argument("--netdepth", type=int, default=4, 
                         help='layers in network')
-    parser.add_argument("--netwidth", type=int, default=256, 
+    parser.add_argument("--netwidth", type=int, default=64, 
                         help='channels per layer')
-    parser.add_argument("--netdepth_fine", type=int, default=8, 
+    parser.add_argument("--netdepth_fine", type=int, default=4, 
                         help='layers in fine network')
-    parser.add_argument("--netwidth_fine", type=int, default=256, 
+    parser.add_argument("--netwidth_fine", type=int, default=64,
                         help='channels per layer in fine network')
     parser.add_argument("--N_rand", type=int, default=32*32*4, 
                         help='batch size (number of random rays per gradient step)')
