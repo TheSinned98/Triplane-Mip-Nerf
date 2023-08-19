@@ -4,14 +4,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torch.utils.checkpoint import checkpoint
+import math
 
 # Misc
 img2mse = lambda x, y : torch.mean((x - y) ** 2)
 mse2psnr = lambda x : -10. * torch.log(x) / torch.log(torch.Tensor([10.]))
 to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 
+
 class TriPlaneEmbedder(nn.Module):
-    def __init__(self, feature_dim=64, size=128, scale=torch.ones(1,3)):
+    def __init__(self, mip, laplace, feature_dim=64, size=128, scale=torch.ones(1,3)):
         """
         scale: scale factor for x,y,z, because not every scene is normalized
         """
@@ -20,20 +22,25 @@ class TriPlaneEmbedder(nn.Module):
         self.plane_features = feature_dim
         self.size = size
         self.scale = scale
+        self.mip=mip
+        self.laplace=laplace
         self.xy_plane = nn.Parameter(torch.randn((1, self.plane_features, self.size, self.size))) # [1, num_features, W, H]
         self.yz_plane = nn.Parameter(torch.randn((1, self.plane_features, self.size, self.size))) # [1, num_features, W, H]
         self.xz_plane = nn.Parameter(torch.randn((1, self.plane_features, self.size, self.size))) # [1, num_features, W, H]
         
-        self.xy_plane1 = nn.Parameter(torch.randn((1, self.plane_features, self.size/2, self.size/2))) # [1, num_features, W, H]
-        self.yz_plane1 = nn.Parameter(torch.randn((1, self.plane_features, self.size/2, self.size/2))) # [1, num_features, W, H]
-        self.xz_plane1 = nn.Parameter(torch.randn((1, self.plane_features, self.size/2, self.size/2))) # [1, num_features, W, H]
+        if mip or laplace:
+            self.xy_plane1 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/2), int(self.size/2)))) # [1, num_features, W, H]
+            self.yz_plane1 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/2), int(self.size/2)))) # [1, num_features, W, H]
+            self.xz_plane1 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/2), int(self.size/2)))) # [1, num_features, W, H]
+            
+            self.xy_plane2 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/4), int(self.size/4)))) # [1, num_features, W, H]
+            self.yz_plane2 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/4), int(self.size/4)))) # [1, num_features, W, H]
+            self.xz_plane2 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/4), int(self.size/4)))) # [1, num_features, W, H]
         
-        self.xy_plane2 = nn.Parameter(torch.randn((1, self.plane_features, self.size/4, self.size/4))) # [1, num_features, W, H]
-        self.yz_plane2 = nn.Parameter(torch.randn((1, self.plane_features, self.size/4, self.size/4))) # [1, num_features, W, H]
-        self.xz_plane2 = nn.Parameter(torch.randn((1, self.plane_features, self.size/4, self.size/4))) # [1, num_features, W, H]
 
-    def forward(self, x, cam):
+    def forward(self, x, rays_o):
         # x has shape [B, 3]
+        #cam=torch.tensor([1,1,1])
         b, c = x.shape
         assert c == 3, "Wrong spatial dimension for x"
        
@@ -46,31 +53,73 @@ class TriPlaneEmbedder(nn.Module):
         yz_proj_coords = x[..., 1:]
         
         #calculate distance from points to cam
-        break1=0
-        break2=0
-        for i in range(b):
-            distance=x[i]-cam
-            if distance>0.5 and break1==0:
-                break1=i
-            if distance>0.8 and break2==0:
-                break2=i
+        if self.mip or self.laplace:
+            break1=0
+            break2=0
+            for i in range(b):
+                #distance=torch.cdist(cam,torch.transpose(x[i],-1,0),p=2)
+                distance=rays_o[0]-x[i]
+                distance=math.sqrt(distance[0]*distance[0]+distance[1]*distance[1]+distance[2]*distance[2])
+                if i==1 or i==6000:
+                    print("distance: ",distance)
+                if distance>1.5 and break1==0:
+                    break1=i
+                if distance >2 and break2==0:
+                    break2=i
+                    break
 
         # grid_sample needs coords of shape [B, W, H, 2] but we have [B, 2], so just reshape a bit...
         xy_proj_coords = xy_proj_coords.view(1, b, 1, 2) # B=1 because our planes have B=1
         xz_proj_coords = xz_proj_coords.view(1, b, 1, 2)
         yz_proj_coords = yz_proj_coords.view(1, b, 1, 2)
         
-        #split coords according to distance
-        xy_proj_coords, xy_proj_coords1, xy_proj_coords2=torch.tensor_split(xy_proj_coords,(break1,break2),dim=0)
-        xz_proj_coords, xz_proj_coords1, xz_proj_coords2=torch.tensor_split(xz_proj_coords,(break1,break2),dim=0)
-        yz_proj_coords, yz_proj_coords1, yz_proj_coords2=torch.tensor_split(yz_proj_coords,(break1,break2),dim=0)
+        if self.mip or self.laplace:
+            #split coords according to distance
+            xy_proj_coords, xy_proj_coords1, xy_proj_coords2=torch.tensor_split(xy_proj_coords,(break1,break2),dim=1)
+            xz_proj_coords, xz_proj_coords1, xz_proj_coords2=torch.tensor_split(xz_proj_coords,(break1,break2),dim=1)
+            yz_proj_coords, yz_proj_coords1, yz_proj_coords2=torch.tensor_split(yz_proj_coords,(break1,break2),dim=1)
+        
+        #prepare mip planes
+        #upsample and add
+        #self.xy_plane2up= nn.functional.interpolate(self.xy_plane2,scale_factor=4, mode='bilinear')+nn.functional.interpolate(self.xy_plane1,scale_factor=2, mode='bilinear')+self.xy_plane
+        #self.xz_plane2up= nn.functional.interpolate(self.xz_plane2,scale_factor=4, mode='bilinear')+nn.functional.interpolate(self.xz_plane1,scale_factor=2, mode='bilinear')+self.xz_plane
+        #self.yz_plane2up= nn.functional.interpolate(self.yz_plane2,scale_factor=4, mode='bilinear')+nn.functional.interpolate(self.yz_plane1,scale_factor=2, mode='bilinear')+self.yz_plane
+        #self.xy_plane1up= nn.functional.interpolate(self.xy_plane1,scale_factor=2, mode='bilinear')+self.xy_plane
+        #self.xz_plane1up= nn.functional.interpolate(self.xz_plane1,scale_factor=2, mode='bilinear')+self.xz_plane
+        #self.yz_plane1up= nn.functional.interpolate(self.yz_plane1,scale_factor=2, mode='bilinear')+self.yz_plane
 
         # sample planes and interpolate
         # NOTE: grid sample expects coords to be in range [-1, 1]
         xy_features = F.grid_sample(self.xy_plane, xy_proj_coords, mode="bilinear", align_corners=True)
         xz_features = F.grid_sample(self.xz_plane, xz_proj_coords, mode="bilinear", align_corners=True)
         yz_features = F.grid_sample(self.yz_plane, yz_proj_coords, mode="bilinear", align_corners=True)
+        
+        if self.mip:
+            xy_features1 = F.grid_sample(self.xy_plane1, xy_proj_coords1, mode="bilinear", align_corners=True)
+            xz_features1 = F.grid_sample(self.xz_plane1, xz_proj_coords1, mode="bilinear", align_corners=True)
+            yz_features1 = F.grid_sample(self.yz_plane1, yz_proj_coords1, mode="bilinear", align_corners=True)
+            
+            xy_features2 = F.grid_sample(self.xy_plane2, xy_proj_coords2, mode="bilinear", align_corners=True)
+            xz_features2 = F.grid_sample(self.xz_plane2, xz_proj_coords2, mode="bilinear", align_corners=True)
+            yz_features2 = F.grid_sample(self.yz_plane2, yz_proj_coords2, mode="bilinear", align_corners=True)
+            
+        else:
+            if self.laplace:
+                xy_features1 = F.grid_sample(self.xy_plane1, xy_proj_coords1, mode="bilinear", align_corners=True)+F.grid_sample(self.xy_plane, xy_proj_coords1, mode="bilinear", align_corners=True)
+                xz_features1 = F.grid_sample(self.xz_plane1, xz_proj_coords1, mode="bilinear", align_corners=True)+F.grid_sample(self.xz_plane, xz_proj_coords1, mode="bilinear", align_corners=True)
+                yz_features1 = F.grid_sample(self.yz_plane1, yz_proj_coords1, mode="bilinear", align_corners=True)+F.grid_sample(self.yz_plane, yz_proj_coords1, mode="bilinear", align_corners=True)
+            
+                xy_features2 = F.grid_sample(self.xy_plane2, xy_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.xy_plane1, xy_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.xy_plane, xy_proj_coords2, mode="bilinear", align_corners=True)
+                xz_features2 = F.grid_sample(self.xz_plane2, xz_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.xz_plane1, xz_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.xz_plane, xz_proj_coords2, mode="bilinear", align_corners=True)
+                yz_features2 = F.grid_sample(self.yz_plane2, yz_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.yz_plane1, yz_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.yz_plane, yz_proj_coords2, mode="bilinear", align_corners=True)
 
+
+        if self.mip or self.laplace:
+            #concatinate features again
+            xy_features=torch.cat((xy_features,xy_features1,xy_features2),dim=2)
+            xz_features=torch.cat((xz_features,xz_features1,xz_features2),dim=2)
+            yz_features=torch.cat((yz_features,yz_features1,yz_features2),dim=2)
+            
         # features now have shape [1, num_features, B, 1]
         # reshape to [B, num_features]
 

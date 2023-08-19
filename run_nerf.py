@@ -34,11 +34,11 @@ def batchify(fn, chunk):
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
+def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, rays_o, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
-    embedded = embed_fn(inputs_flat)
+    embedded = embed_fn(inputs_flat,rays_o)
 
     if viewdirs is not None:
         input_dirs = viewdirs[:,None].expand(inputs.shape)
@@ -182,7 +182,7 @@ def create_nerf(args):
     
     feature_dim = 64
     scale=torch.tensor([[0.3],[0.3],[0.3]])
-    embed_fn, input_ch = TriPlaneEmbedder(feature_dim, 400, scale), feature_dim
+    embed_fn, input_ch = TriPlaneEmbedder(args.mip, args.laplace, feature_dim, 400, scale), feature_dim
 
     input_ch_views = 0
     embeddirs_fn = None
@@ -203,9 +203,9 @@ def create_nerf(args):
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
 
-    network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
+    network_query_fn = lambda inputs, viewdirs, network_fn, rays_o : run_network(inputs, viewdirs, network_fn,
                                                                 embed_fn=embed_fn,
-                                                                embeddirs_fn=embeddirs_fn,
+                                                                embeddirs_fn=embeddirs_fn, rays_o=rays_o,
                                                                 netchunk=args.netchunk)
 
     # Create optimizer
@@ -358,6 +358,7 @@ def render_rays(ray_batch,
     viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
     bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
     near, far = bounds[...,0], bounds[...,1] # [-1,1]
+    
 
     t_vals = torch.linspace(0., 1., steps=N_samples)
     if not lindisp:
@@ -387,7 +388,7 @@ def render_rays(ray_batch,
 
 
 #     raw = run_network(pts)
-    raw = network_query_fn(pts, viewdirs, network_fn)
+    raw = network_query_fn(pts, viewdirs, network_fn, rays_o)
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
     if N_importance > 0:
@@ -403,7 +404,7 @@ def render_rays(ray_batch,
 
         run_fn = network_fn if network_fine is None else network_fine
 #         raw = run_network(pts, fn=run_fn)
-        raw = network_query_fn(pts, viewdirs, run_fn)
+        raw = network_query_fn(pts, viewdirs, run_fn, rays_o)
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
@@ -532,6 +533,10 @@ def config_parser():
                         help='frequency of testset saving')
     parser.add_argument("--i_video",   type=int, default=50000, 
                         help='frequency of render_poses video saving')
+    
+    #mip and laplace
+    parser.add_argument("--mip", action='store_true', help='adds additional mip planes')
+    parser.add_argument("--laplace", action='store_true', help='adds additional mip planes and uses laplace for feature evaluation')
 
     return parser
 
