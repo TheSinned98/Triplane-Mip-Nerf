@@ -46,7 +46,17 @@ def load_renderings(data_dir, split):
 
 def down2(img):
   sh = img.shape
-  return np.mean(np.reshape(img, [sh[0] // 2, 2, sh[1] // 2, 2, -1]), (1, 3))
+  downImg = np.mean(np.reshape(img, [sh[0] // 2, 2, sh[1] // 2, 2, -1]), (1, 3))
+  imgArray = np.asarray(downImg)
+  filledImg = np.zeros(sh)
+  sh01=int(sh[0]*0.25)
+  sh02=int(sh[0]/2)
+  sh11=int(sh[1]*0.25)
+  sh12=int(sh[1]/2)
+  for i in range(sh02-1):
+    for j in range(sh12-1):
+      filledImg[i+sh01,j+sh11]=imgArray[i,j]
+  return filledImg
 
 
 def convert_to_nerfdata(basedir, newdir, n_down):
@@ -62,7 +72,7 @@ def convert_to_nerfdata(basedir, newdir, n_down):
     data = load_renderings(basedir, split)
 
     # Save out all the images
-    imgdir = 'images_{}'.format(split)
+    imgdir = '{}'.format(split)
     os.makedirs(os.path.join(newdir, imgdir), exist_ok=True)
     fnames = []
     widths = []
@@ -72,12 +82,17 @@ def convert_to_nerfdata(basedir, newdir, n_down):
     lossmults = []
     labels = []
     nears, fars = [], []
+    frames=[]
     f = data['focal']
     print('Saving images')
     for i, img in enumerate(data['images']):
       for j in range(n_down):
         fname = '{}/{:03d}_d{}.png'.format(imgdir, i, j)
-        fnames.append(fname)
+        #fnames.append(fname)
+        
+        frame={}
+        frame['file_path']=fname
+        
         fname = os.path.join(newdir, fname)
         with open(fname, 'wb') as imgout:
           img8 = Image.fromarray(np.uint8(img * 255))
@@ -90,24 +105,36 @@ def convert_to_nerfdata(basedir, newdir, n_down):
         labels.append(j)
         nears.append(2.)
         fars.append(6.)
+        
+        
+        frame['transform_matrix']=data['camtoworlds'][i].tolist()
+        frame['focal']=f / 2**j
+        frame['width']=img.shape[1]
+        frame['height']=img.shape[0]
+        frames.append(frame)
+        
         img = down2(img)
+        
+        
 
     # Create metadata
     meta = {}
-    meta['file_path'] = fnames
-    meta['cam2world'] = cam2worlds
-    meta['width'] = widths
-    meta['height'] = heights
-    meta['focal'] = focals
-    meta['label'] = labels
-    meta['near'] = nears
-    meta['far'] = fars
-    meta['lossmult'] = lossmults
+    # meta['file_path'] = fnames
+    # meta['cam2world'] = cam2worlds
+    # meta['width'] = widths
+    # meta['height'] = heights
+    # meta['focal'] = focals
+    # meta['label'] = labels
+    # meta['near'] = nears
+    # meta['far'] = fars
+    # meta['lossmult'] = lossmults
+    meta['camera_angle_x']=0.6911112070083618
+    meta['frames']=frames
 
     fx = np.array(focals)
     fy = np.array(focals)
-    cx = np.array(meta['width']) * .5
-    cy = np.array(meta['height']) * .5
+    cx = np.array(widths) * .5
+    cy = np.array(heights) * .5
     arr0 = np.zeros_like(cx)
     arr1 = np.ones_like(cx)
     k_inv = np.array([
@@ -124,9 +151,17 @@ def convert_to_nerfdata(basedir, newdir, n_down):
     for j in bigmeta[k]:
       print(k, j, type(bigmeta[k][j]), np.array(bigmeta[k][j]).shape)
 
-  jsonfile = os.path.join(newdir, 'metadata.json')
+  jsonfile = os.path.join(newdir, 'transforms_test.json')
   with open(jsonfile, 'w') as f:
-    json.dump(bigmeta, f, ensure_ascii=False, indent=4)
+    json.dump(bigmeta['test'], f, ensure_ascii=False, indent=4)
+    
+  jsonfile = os.path.join(newdir, 'transforms_train.json')
+  with open(jsonfile, 'w') as f:
+    json.dump(bigmeta['train'], f, ensure_ascii=False, indent=4)
+    
+  jsonfile = os.path.join(newdir, 'transforms_val.json')
+  with open(jsonfile, 'w') as f:
+    json.dump(bigmeta['val'], f, ensure_ascii=False, indent=4)
 
 
 def main(unused_argv):

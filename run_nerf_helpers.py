@@ -57,11 +57,10 @@ class TriPlaneEmbedder(nn.Module):
             break1=0
             break2=0
             for i in range(b):
-                #distance=torch.cdist(cam,torch.transpose(x[i],-1,0),p=2)
                 distance=rays_o[0]-x[i]
                 distance=math.sqrt(distance[0]*distance[0]+distance[1]*distance[1]+distance[2]*distance[2])
-                if i==1 or i==6000:
-                    print("distance: ",distance)
+                #if i==1 or i==6000:
+                print("distance: ",distance)
                 if distance>1.5 and break1==0:
                     break1=i
                 if distance >2 and break2==0:

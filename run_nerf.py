@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 
 from run_nerf_helpers import *
 
+import load_blender
+
 from load_llff import load_llff_data
 from load_deepvoxels import load_dv_data
 from load_blender import load_blender_data
