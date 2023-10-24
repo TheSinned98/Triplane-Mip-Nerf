@@ -3,12 +3,216 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-
+from torch.utils.checkpoint import checkpoint
+import math
+import tensorflow as tf
+import gc
 
 # Misc
 img2mse = lambda x, y : torch.mean((x - y) ** 2)
 mse2psnr = lambda x : -10. * torch.log(x) / torch.log(torch.Tensor([10.]))
 to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
+
+
+class TriPlaneEmbedder(nn.Module):
+    def __init__(self, mip, laplace, interpolate, feature_dim=64, size=128, scale=torch.ones(1,3)):
+        """
+        scale: scale factor for x,y,z, because not every scene is normalized
+        """
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.plane_features = feature_dim
+        self.size = size
+        self.scale = scale
+        self.mip=mip
+        self.laplace=laplace
+        self.interpolate=interpolate
+        self.xy_plane = nn.Parameter(torch.randn((1, self.plane_features, self.size, self.size))) # [1, num_features, W, H]
+        self.yz_plane = nn.Parameter(torch.randn((1, self.plane_features, self.size, self.size))) # [1, num_features, W, H]
+        self.xz_plane = nn.Parameter(torch.randn((1, self.plane_features, self.size, self.size))) # [1, num_features, W, H]
+        
+        if mip or laplace or interpolate:
+            self.xy_plane1 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/2), int(self.size/2)))) # [1, num_features, W, H]
+            self.yz_plane1 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/2), int(self.size/2)))) # [1, num_features, W, H]
+            self.xz_plane1 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/2), int(self.size/2)))) # [1, num_features, W, H]
+            
+            self.xy_plane2 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/4), int(self.size/4)))) # [1, num_features, W, H]
+            self.yz_plane2 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/4), int(self.size/4)))) # [1, num_features, W, H]
+            self.xz_plane2 = nn.Parameter(torch.randn((1, self.plane_features, int(self.size/4), int(self.size/4)))) # [1, num_features, W, H]
+        
+
+    def forward(self, x, rays_o):
+        # x has shape [B, 3]
+        #cam=torch.tensor([1,1,1])
+        th=8
+        th1=5
+        th2=10
+        skipCoords2=False
+        interpolation_th=8
+        b, c = x.shape
+        assert c == 3, "Wrong spatial dimension for x"
+       
+        x[:,0] = x[:,0] * self.scale[0]
+        x[:,1] = x[:,1] * self.scale[1]
+        x[:,2] = x[:,2] * self.scale[2]
+        
+        xy_proj_coords = x[..., :2]
+        xz_proj_coords = torch.cat((x[..., :1], x[..., 2:]), dim=-1)
+        yz_proj_coords = x[..., 1:]
+        
+        #interpolate planes
+        if self.interpolate:
+            # grid_sample needs coords of shape [B, W, H, 2] but we have [B, 2], so just reshape a bit...
+            xy_proj_coords = xy_proj_coords.view(1, b, 1, 2) # B=1 because our planes have B=1
+            xz_proj_coords = xz_proj_coords.view(1, b, 1, 2)
+            yz_proj_coords = yz_proj_coords.view(1, b, 1, 2)
+            
+            xy_features2 = F.grid_sample(self.xy_plane2, xy_proj_coords, mode="bilinear", align_corners=True)
+            xy_features1 = F.grid_sample(self.xy_plane1, xy_proj_coords, mode="bilinear", align_corners=True)
+            xy_features0 = F.grid_sample(self.xy_plane, xy_proj_coords, mode="bilinear", align_corners=True)
+            
+            xz_features2 = F.grid_sample(self.xz_plane2, xz_proj_coords, mode="bilinear", align_corners=True)
+            xz_features1 = F.grid_sample(self.xz_plane1, xz_proj_coords, mode="bilinear", align_corners=True)
+            xz_features0 = F.grid_sample(self.xz_plane, xz_proj_coords, mode="bilinear", align_corners=True)
+            
+            yz_features2 = F.grid_sample(self.yz_plane2, yz_proj_coords, mode="bilinear", align_corners=True)
+            yz_features1 = F.grid_sample(self.yz_plane1, yz_proj_coords, mode="bilinear", align_corners=True)
+            yz_features0 = F.grid_sample(self.yz_plane, yz_proj_coords, mode="bilinear", align_corners=True)
+            
+            #calculate camera to sample distance
+            oTensor=rays_o[0].unsqueeze(0)
+            distance= oTensor-x
+            distance=torch.linalg.norm(x,dim=-1)
+            
+            thTensor=torch.full_like(distance,th)
+            ones=torch.ones_like(distance)
+            divDist=distance/thTensor
+            
+            #calculate weights w0,w1,w2
+            w2=(distance-thTensor)/thTensor
+            w2[distance<=th]=0
+            w2_is_zero=ones
+            w2_is_zero[w2!=0]=0
+            
+            w1=ones-w2
+            w1[w2==0]=0
+            w1=w1+(divDist*w2_is_zero)
+            
+            w0=ones-w1
+            w0[w0>th]=0
+            
+            del oTensor,distance,thTensor,ones,divDist
+            torch.cuda.empty_cache
+            gc.collect
+            
+            w0=w0.unsqueeze(0)
+            #Error CUDA out of memory
+            xy_features0=xy_features0*w0
+            xy_features1=xy_features1*w1
+            xy_features2=xy_features2*w2
+            xy_features=xy_features0+xy_features1+xy_features2
+            xz_features=xz_features0*w0+xz_features1*w1+xz_features2*w2
+            yz_features=yz_features0*w0+yz_features1*w1+yz_features2*w2
+                
+            # #calculate distance
+            # for i in range(b):
+            #     distance=rays_o[0]-x[i]
+            #     distance=math.sqrt(distance[0]*distance[0]+distance[1]*distance[1]+distance[2]*distance[2])
+            #     if distance<=th:
+            #         w2=0
+            #         w1=distance/th
+            #         w0=1-w1
+            #     else:
+            #         w0=0
+            #         w2=(distance-th)/th
+            #         w1=1-w2
+            #     #xy_proj_coords2=xy_proj_coords[:,i]
+                
+            #     xy_features[i,:]=w0*xy_features0[i,:]+w1*xy_features1[i,:]+w2*xy_features2[i,:]
+            #     xz_features[i,:]=w0*xz_features0[i,:]+w1*xz_features1[i,:]+w2*xz_features2[i,:]
+            #     yz_features[i,:]=w0*yz_features0[i,:]+w1*yz_features1[i,:]+w2*yz_features2[i,:]
+        else:
+        #no interpolation
+                        
+            oTensor=rays_o[0].unsqueeze(0)
+            distance= oTensor-x
+            distance=torch.linalg.norm(x,dim=-1)
+
+            # grid_sample needs coords of shape [B, W, H, 2] but we have [B, 2], so just reshape a bit...
+            xy_proj_coords = xy_proj_coords.view(1, b, 1, 2) # B=1 because our planes have B=1
+            xz_proj_coords = xz_proj_coords.view(1, b, 1, 2)
+            yz_proj_coords = yz_proj_coords.view(1, b, 1, 2)
+            
+            print(xy_proj_coords.shape)
+            
+            #split data for different planes
+            if self.mip or self.laplace:
+                distance= distance.unsqueeze(0).unsqueeze(-1).unsqueeze(-1).expand(xy_proj_coords.shape)
+                
+                xy_proj_coords1=xy_proj_coords[(distance>th1) & (distance<th2)].view(1, -1, 1, 2)
+                xy_proj_coords2=xy_proj_coords[distance>th2].view(1, -1, 1, 2)
+                xy_proj_coords=xy_proj_coords[distance<=th1].view(1, -1, 1, 2)
+                
+                xz_proj_coords1=xz_proj_coords[(distance>th1) & (distance<th2)].view(1, -1, 1, 2)
+                xz_proj_coords2=xz_proj_coords[distance>th2].view(1, -1, 1, 2)
+                xz_proj_coords=xz_proj_coords[distance<=th1].view(1, -1, 1, 2)
+                
+                yz_proj_coords1=yz_proj_coords[(distance>th1) & (distance<th2)].view(1, -1, 1, 2)
+                yz_proj_coords2=yz_proj_coords[distance>th2].view(1, -1, 1, 2)
+                yz_proj_coords=yz_proj_coords[distance<=th1].view(1, -1, 1, 2)
+                
+
+            # sample planes and interpolate
+            # NOTE: grid sample expects coords to be in range [-1, 1]
+            xy_features = F.grid_sample(self.xy_plane, xy_proj_coords, mode="bilinear", align_corners=True)
+            xz_features = F.grid_sample(self.xz_plane, xz_proj_coords, mode="bilinear", align_corners=True)
+            yz_features = F.grid_sample(self.yz_plane, yz_proj_coords, mode="bilinear", align_corners=True)
+            
+            if self.mip:
+                xy_features1 = F.grid_sample(self.xy_plane1, xy_proj_coords1, mode="bilinear", align_corners=True)
+                xz_features1 = F.grid_sample(self.xz_plane1, xz_proj_coords1, mode="bilinear", align_corners=True)
+                yz_features1 = F.grid_sample(self.yz_plane1, yz_proj_coords1, mode="bilinear", align_corners=True)
+                
+                if not skipCoords2:
+                    xy_features2 = F.grid_sample(self.xy_plane2, xy_proj_coords2, mode="bilinear", align_corners=True)
+                    xz_features2 = F.grid_sample(self.xz_plane2, xz_proj_coords2, mode="bilinear", align_corners=True)
+                    yz_features2 = F.grid_sample(self.yz_plane2, yz_proj_coords2, mode="bilinear", align_corners=True)
+                
+            else:
+                if self.laplace:
+                    xy_features1 = F.grid_sample(self.xy_plane1, xy_proj_coords1, mode="bilinear", align_corners=True)+F.grid_sample(self.xy_plane, xy_proj_coords1, mode="bilinear", align_corners=True)
+                    xz_features1 = F.grid_sample(self.xz_plane1, xz_proj_coords1, mode="bilinear", align_corners=True)+F.grid_sample(self.xz_plane, xz_proj_coords1, mode="bilinear", align_corners=True)
+                    yz_features1 = F.grid_sample(self.yz_plane1, yz_proj_coords1, mode="bilinear", align_corners=True)+F.grid_sample(self.yz_plane, yz_proj_coords1, mode="bilinear", align_corners=True)
+                
+                    xy_features2 = F.grid_sample(self.xy_plane2, xy_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.xy_plane1, xy_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.xy_plane, xy_proj_coords2, mode="bilinear", align_corners=True)
+                    xz_features2 = F.grid_sample(self.xz_plane2, xz_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.xz_plane1, xz_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.xz_plane, xz_proj_coords2, mode="bilinear", align_corners=True)
+                    yz_features2 = F.grid_sample(self.yz_plane2, yz_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.yz_plane1, yz_proj_coords2, mode="bilinear", align_corners=True)+F.grid_sample(self.yz_plane, yz_proj_coords2, mode="bilinear", align_corners=True)
+
+
+            if self.mip or self.laplace:
+                #concatinate features again
+                xy_features=torch.cat((xy_features,xy_features1,xy_features2),dim=2)
+                xz_features=torch.cat((xz_features,xz_features1,xz_features2),dim=2)
+                yz_features=torch.cat((yz_features,yz_features1,yz_features2),dim=2)
+            
+        
+        # features now have shape [1, num_features, B, 1]
+        # reshape to [B, num_features]
+        
+        print(xy_features.shape)
+        
+        xy_features = xy_features.permute(0, 2, 1, 3)
+        xz_features = xz_features.permute(0, 2, 1, 3)
+        yz_features = yz_features.permute(0, 2, 1, 3)
+        
+        print(xy_features.shape)
+        print(b)
+
+        xy_features = xy_features.view(b, self.plane_features)
+        xz_features = xz_features.view(b, self.plane_features)
+        yz_features = yz_features.view(b, self.plane_features)
+
+        return xy_features + xz_features + yz_features
 
 
 # Positional encoding (section 5.1)
@@ -157,6 +361,7 @@ def get_rays(H, W, K, c2w):
     dirs = torch.stack([(i-K[0][2])/K[0][0], -(j-K[1][2])/K[1][1], -torch.ones_like(i)], -1)
     # Rotate ray directions from camera frame to the world frame
     rays_d = torch.sum(dirs[..., np.newaxis, :] * c2w[:3,:3], -1)  # dot product, equals to: [c2w.dot(dir) for dir in dirs]
+    rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1).unsqueeze(-1)
     # Translate camera frame's origin to the world frame. It is the origin of all rays.
     rays_o = c2w[:3,-1].expand(rays_d.shape)
     return rays_o, rays_d

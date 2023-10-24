@@ -22,7 +22,7 @@ from load_LINEMOD import load_LINEMOD_data
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 np.random.seed(0)
 DEBUG = False
-
+R = 3.0
 
 def batchify(fn, chunk):
     """Constructs a version of 'fn' that applies to smaller batches.
@@ -34,11 +34,11 @@ def batchify(fn, chunk):
     return ret
 
 
-def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, netchunk=1024*64):
+def run_network(inputs, viewdirs, fn, embed_fn, embeddirs_fn, rays_o, netchunk=1024*64):
     """Prepares inputs and applies network 'fn'.
     """
     inputs_flat = torch.reshape(inputs, [-1, inputs.shape[-1]])
-    embedded = embed_fn(inputs_flat)
+    embedded = embed_fn(inputs_flat,rays_o)
 
     if viewdirs is not None:
         input_dirs = viewdirs[:,None].expand(inputs.shape)
@@ -118,6 +118,15 @@ def render(H, W, K, chunk=1024*32, rays=None, c2w=None, ndc=True,
     rays_d = torch.reshape(rays_d, [-1,3]).float()
 
     near, far = near * torch.ones_like(rays_d[...,:1]), far * torch.ones_like(rays_d[...,:1])
+    # dynamically set near and far planes
+    # we define the near plane as the plane tangent to the sphere with radius R around the world origin with normal vector pointing directly towards the ray origin
+    # the far plane is the plane at the opposite side of the sphere
+    # the variables "near" and "far" are the distance to these planes in rays_d direction
+    s = torch.linalg.norm(rays_o, dim=-1).unsqueeze(-1)
+    dc = -rays_o / s # points from ray origin to world origin
+    near = (s - R) / (dc * rays_d).sum(-1).unsqueeze(-1)
+    far = (s + R) / (dc * rays_d).sum(-1).unsqueeze(-1)
+
     rays = torch.cat([rays_o, rays_d, near, far], -1)
     if use_viewdirs:
         rays = torch.cat([rays, viewdirs], -1)
@@ -178,7 +187,11 @@ def render_path(render_poses, hwf, K, chunk, render_kwargs, gt_imgs=None, savedi
 def create_nerf(args):
     """Instantiate NeRF's MLP model.
     """
-    embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+    #embed_fn, input_ch = get_embedder(args.multires, args.i_embed)
+    
+    feature_dim = 64
+    scale=torch.tensor([[0.3],[0.3],[0.3]])
+    embed_fn, input_ch = TriPlaneEmbedder(args.mip, args.laplace, args.interpolate, feature_dim, 400, scale), feature_dim
 
     input_ch_views = 0
     embeddirs_fn = None
@@ -190,6 +203,7 @@ def create_nerf(args):
                  input_ch=input_ch, output_ch=output_ch, skips=skips,
                  input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
     grad_vars = list(model.parameters())
+    grad_vars += list(embed_fn.parameters())
 
     model_fine = None
     if args.N_importance > 0:
@@ -198,9 +212,9 @@ def create_nerf(args):
                           input_ch_views=input_ch_views, use_viewdirs=args.use_viewdirs).to(device)
         grad_vars += list(model_fine.parameters())
 
-    network_query_fn = lambda inputs, viewdirs, network_fn : run_network(inputs, viewdirs, network_fn,
+    network_query_fn = lambda inputs, viewdirs, network_fn, rays_o : run_network(inputs, viewdirs, network_fn,
                                                                 embed_fn=embed_fn,
-                                                                embeddirs_fn=embeddirs_fn,
+                                                                embeddirs_fn=embeddirs_fn, rays_o=rays_o,
                                                                 netchunk=args.netchunk)
 
     # Create optimizer
@@ -353,6 +367,7 @@ def render_rays(ray_batch,
     viewdirs = ray_batch[:,-3:] if ray_batch.shape[-1] > 8 else None
     bounds = torch.reshape(ray_batch[...,6:8], [-1,1,2])
     near, far = bounds[...,0], bounds[...,1] # [-1,1]
+    
 
     t_vals = torch.linspace(0., 1., steps=N_samples)
     if not lindisp:
@@ -382,7 +397,7 @@ def render_rays(ray_batch,
 
 
 #     raw = run_network(pts)
-    raw = network_query_fn(pts, viewdirs, network_fn)
+    raw = network_query_fn(pts, viewdirs, network_fn, rays_o)
     rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
     if N_importance > 0:
@@ -398,7 +413,7 @@ def render_rays(ray_batch,
 
         run_fn = network_fn if network_fine is None else network_fine
 #         raw = run_network(pts, fn=run_fn)
-        raw = network_query_fn(pts, viewdirs, run_fn)
+        raw = network_query_fn(pts, viewdirs, run_fn, rays_o)
 
         rgb_map, disp_map, acc_map, weights, depth_map = raw2outputs(raw, z_vals, rays_d, raw_noise_std, white_bkgd, pytest=pytest)
 
@@ -432,13 +447,13 @@ def config_parser():
                         help='input data directory')
 
     # training options
-    parser.add_argument("--netdepth", type=int, default=8, 
+    parser.add_argument("--netdepth", type=int, default=4, 
                         help='layers in network')
-    parser.add_argument("--netwidth", type=int, default=256, 
+    parser.add_argument("--netwidth", type=int, default=64, 
                         help='channels per layer')
-    parser.add_argument("--netdepth_fine", type=int, default=8, 
+    parser.add_argument("--netdepth_fine", type=int, default=4, 
                         help='layers in fine network')
-    parser.add_argument("--netwidth_fine", type=int, default=256, 
+    parser.add_argument("--netwidth_fine", type=int, default=64,
                         help='channels per layer in fine network')
     parser.add_argument("--N_rand", type=int, default=32*32*4, 
                         help='batch size (number of random rays per gradient step)')
@@ -446,7 +461,7 @@ def config_parser():
                         help='learning rate')
     parser.add_argument("--lrate_decay", type=int, default=250, 
                         help='exponential learning rate decay (in 1000 steps)')
-    parser.add_argument("--chunk", type=int, default=1024*32, 
+    parser.add_argument("--chunk", type=int, default=1024, 
                         help='number of rays processed in parallel, decrease if running out of memory')
     parser.add_argument("--netchunk", type=int, default=1024*64, 
                         help='number of pts sent through network in parallel, decrease if running out of memory')
@@ -523,10 +538,15 @@ def config_parser():
                         help='frequency of tensorboard image logging')
     parser.add_argument("--i_weights", type=int, default=10000, 
                         help='frequency of weight ckpt saving')
-    parser.add_argument("--i_testset", type=int, default=50000, 
+    parser.add_argument("--i_testset", type=int, default=10000, 
                         help='frequency of testset saving')
-    parser.add_argument("--i_video",   type=int, default=50000, 
+    parser.add_argument("--i_video",   type=int, default=10000, 
                         help='frequency of render_poses video saving')
+    
+    #mip and laplace
+    parser.add_argument("--mip", action='store_true', help='adds additional mip planes')
+    parser.add_argument("--laplace", action='store_true', help='adds additional mip planes and uses laplace for feature evaluation')
+    parser.add_argument("--interpolate", action='store_true', help='use interpolation of planes')
 
     return parser
 
@@ -749,12 +769,20 @@ def train():
                     coords = torch.stack(torch.meshgrid(torch.linspace(0, H-1, H), torch.linspace(0, W-1, W)), -1)  # (H, W, 2)
 
                 coords = torch.reshape(coords, [-1,2])  # (H * W, 2)
-                select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=False)  # (N_rand,)
+                select_inds = np.random.choice(coords.shape[0], size=[N_rand], replace=True)  # (N_rand,)
                 select_coords = coords[select_inds].long()  # (N_rand, 2)
                 rays_o = rays_o[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
                 rays_d = rays_d[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+
+                # filters out every ray that does not hit sphere with radius R. This makes every batch a different size though
+                rays_d = rays_d / torch.linalg.norm(rays_d, dim=-1).unsqueeze(-1)
+                discriminant = (rays_d * rays_o).sum(-1)**2 - ((rays_o * rays_o).sum(-1) - R*R)
+                rays_o = rays_o[discriminant > 0]
+                rays_d = rays_d[discriminant > 0]
+                
                 batch_rays = torch.stack([rays_o, rays_d], 0)
                 target_s = target[select_coords[:, 0], select_coords[:, 1]]  # (N_rand, 3)
+                target_s = target_s[discriminant > 0]
 
         #####  Core optimization loop  #####
         rgb, disp, acc, extras = render(H, W, K, chunk=args.chunk, rays=batch_rays,
