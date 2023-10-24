@@ -145,7 +145,6 @@ class TriPlaneEmbedder(nn.Module):
             
             print(xy_proj_coords.shape)
             
-            #split data for different planes
             if self.mip or self.laplace:
                 distance= distance.unsqueeze(0).unsqueeze(-1).unsqueeze(-1).expand(xy_proj_coords.shape)
                 
