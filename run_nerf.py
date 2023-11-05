@@ -243,7 +243,7 @@ def create_nerf(args):
 
         # Load model
         model.load_state_dict(ckpt['network_fn_state_dict'])
-        network_query_fn.load_state_dict(ckpt['network_query_fn_state_dict'])
+        embed_fn.load_state_dict(ckpt['embed_fn_state_dict'])
         if model_fine is not None:
             model_fine.load_state_dict(ckpt['network_fine_state_dict'])
 
@@ -259,6 +259,7 @@ def create_nerf(args):
         'use_viewdirs' : args.use_viewdirs,
         'white_bkgd' : args.white_bkgd,
         'raw_noise_std' : args.raw_noise_std,
+        'embed_fn' : embed_fn,
     }
 
     # NDC only good for LLFF-style forward facing data
@@ -324,6 +325,7 @@ def render_rays(ray_batch,
                 network_fn,
                 network_query_fn,
                 N_samples,
+                embed_fn,
                 retraw=False,
                 lindisp=False,
                 perturb=0.,
@@ -825,7 +827,7 @@ def train():
                 'network_fn_state_dict': render_kwargs_train['network_fn'].state_dict(),
                 'network_fine_state_dict': render_kwargs_train['network_fine'].state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'network_query_fn_state_dict': render_kwargs_train['network_query_fn'].state_dict(),
+                'embed_fn_state_dict': render_kwargs_train['embed_fn'].state_dict(),
             }, path)
             print('Saved checkpoints at', path)
 

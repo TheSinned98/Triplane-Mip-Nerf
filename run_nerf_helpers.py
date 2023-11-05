@@ -143,7 +143,6 @@ class TriPlaneEmbedder(nn.Module):
             xz_proj_coords = xz_proj_coords.view(1, b, 1, 2)
             yz_proj_coords = yz_proj_coords.view(1, b, 1, 2)
             
-            print(xy_proj_coords.shape)
             
             if self.mip or self.laplace:
                 distance= distance.unsqueeze(0).unsqueeze(-1).unsqueeze(-1).expand(xy_proj_coords.shape)
@@ -198,14 +197,11 @@ class TriPlaneEmbedder(nn.Module):
         # features now have shape [1, num_features, B, 1]
         # reshape to [B, num_features]
         
-        print(xy_features.shape)
         
         xy_features = xy_features.permute(0, 2, 1, 3)
         xz_features = xz_features.permute(0, 2, 1, 3)
         yz_features = yz_features.permute(0, 2, 1, 3)
-        
-        print(xy_features.shape)
-        print(b)
+
 
         xy_features = xy_features.view(b, self.plane_features)
         xz_features = xz_features.view(b, self.plane_features)

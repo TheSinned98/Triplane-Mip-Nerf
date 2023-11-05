@@ -1,0 +1,28 @@
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_0.png und ./logs/blender_paper_lego/testset_200000\000.png: 1.6582296767617408
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_2.png und ./logs/blender_paper_lego/testset_200000\001.png: 1.7293036655216343
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_12.png und ./logs/blender_paper_lego/testset_200000\002.png: 1.8652349960094234
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_27.png und ./logs/blender_paper_lego/testset_200000\003.png: 1.932713127718597
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_34.png und ./logs/blender_paper_lego/testset_200000\004.png: 1.925973818668505
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_41.png und ./logs/blender_paper_lego/testset_200000\005.png: 1.7734465925375773
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_49.png und ./logs/blender_paper_lego/testset_200000\006.png: 1.453806641916777
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_56.png und ./logs/blender_paper_lego/testset_200000\007.png: 1.5394663360699186
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_63.png und ./logs/blender_paper_lego/testset_200000\008.png: 1.5686241668332537
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_70.png und ./logs/blender_paper_lego/testset_200000\009.png: 1.369896599157015
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_78.png und ./logs/blender_paper_lego/testset_200000\010.png: 1.2867903249870658
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_85.png und ./logs/blender_paper_lego/testset_200000\011.png: 1.3429909695267839
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_92.png und ./logs/blender_paper_lego/testset_200000\012.png: 1.0792307728745347
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_105.png und ./logs/blender_paper_lego/testset_200000\013.png: 0.996100873353641
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_112.png und ./logs/blender_paper_lego/testset_200000\014.png: 1.323057498476863
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_127.png und ./logs/blender_paper_lego/testset_200000\015.png: 1.3398642258760436
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_134.png und ./logs/blender_paper_lego/testset_200000\016.png: 1.4474524797357846
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_141.png und ./logs/blender_paper_lego/testset_200000\017.png: 1.5740808057360005
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_149.png und ./logs/blender_paper_lego/testset_200000\018.png: 1.4737400911703964
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_156.png und ./logs/blender_paper_lego/testset_200000\019.png: 1.5726479505644722
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_163.png und ./logs/blender_paper_lego/testset_200000\020.png: 1.8230010430111896
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_170.png und ./logs/blender_paper_lego/testset_200000\021.png: 1.9018018526214449
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_178.png und ./logs/blender_paper_lego/testset_200000\022.png: 1.8540434583189365
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_185.png und ./logs/blender_paper_lego/testset_200000\023.png: 1.833316436038202
+PSNR für ./data/nerf_synthetic/lego_mip/test\r_192.png und ./logs/blender_paper_lego/testset_200000\024.png: 1.7001839089591435
+
+Durchschnittlicher PSNR: 1.5745999324977975
+Durchschnittlicher Verlust: 98.4254000675022
