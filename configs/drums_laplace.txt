@@ -1,6 +1,6 @@
 expname = blender_paper_drums_laplace
 basedir = ./logs
-datadir = /home/cgadmin/data/hendrik/nerf/data/drums
+datadir = ./data/nerf_synthetic/drums
 dataset_type = blender
 
 no_batching = True
@@ -18,5 +18,4 @@ precrop_frac = 0.5
 
 half_res = True
 
-mip = True
 laplace = True
